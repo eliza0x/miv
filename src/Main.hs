@@ -1,10 +1,12 @@
 {-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
 module Main where
 
-import Control.Monad (filterM, forM_, unless, void, when)
+import Control.Applicative ((<|>))
+import Control.Monad (filterM, forM_, unless, void, when, guard)
 import qualified Control.Monad.Parallel as P
+import qualified Data.Attoparsec.Text as A
 import Data.List ((\\), foldl', isPrefixOf, nub, transpose, unfoldr)
-import Data.Maybe (listToMaybe, fromMaybe, isNothing)
+import Data.Maybe (listToMaybe, fromMaybe, fromJust, isNothing)
 import Data.Monoid ((<>))
 import Data.Text (Text, unlines, pack, unpack)
 import qualified Data.Text as T
@@ -15,7 +17,7 @@ import Data.Yaml (decodeFileEither, prettyPrintParseException)
 import GHC.Conc (getNumProcessors, setNumCapabilities)
 import Prelude hiding (readFile, writeFile, unlines, putStrLn, putStr, show)
 import System.Directory
-import System.Environment (getArgs)
+import System.Environment (getArgs, getEnv)
 import System.Exit (ExitCode(..))
 import System.Info (os)
 import System.IO (hFlush, stdout)
@@ -31,24 +33,51 @@ import VimScript
 nameversion :: Text
 nameversion = "miv " <> pack (showVersion version)
 
+data PathConfig = PathConfig
+    { isIncludingHome          :: Bool
+    , isIncludingXdgConfigHome :: Bool
+    , directoryTail            :: Text
+    }
+    deriving (Show)
+
+parsePathConfig :: Text -> Either String PathConfig
+parsePathConfig = A.parseOnly $ PathConfig <$>
+  home <* A.char '/' <*> xdgConfigHome <*> A.takeText
+  where
+    home = return True <* A.char '~' <|>  return False 
+    xdgConfigHome = return True <* A.string "$XDG_CONFIG_HOME" <|> return False 
+
+pathConfigToFilePath :: PathConfig -> IO FilePath
+pathConfigToFilePath pathConf = do
+  home <- fromJust $ getPath "XDG_CONFIG_HOME" isIncludingXdgConfigHome <|> 
+                    getPath "HOME" isIncludingHome <|>
+                    (Just $ return "/")
+  return $ home ++ (unpack . directoryTail) pathConf
+  where
+    getPath :: String -> (PathConfig -> Bool) -> Maybe (IO FilePath)
+    getPath env isIncluding = Just (getEnv env) <* guard (isIncluding pathConf)
+
 expandHomeDirectory :: FilePath -> IO FilePath
-expandHomeDirectory ('~':path) = (<>path) <$> getHomeDirectory
-expandHomeDirectory path = return path
+expandHomeDirectory = pathConfigToFilePath . fromRight . parsePathConfig . pack
+  where
+    fromRight (Right a) = a
+    fromRight _ = error "[Bug] Miv.Main.fromRight: Left"
 
 getSettingFile :: IO (Maybe FilePath)
-getSettingFile
-  = fmap listToMaybe $ filterM doesFileExist =<< mapM expandHomeDirectory
-       [ "~/.vimrc.yaml"
-       , "~/.vim/.vimrc.yaml"
-       , "~/vimrc.yaml"
-       , "~/.vim/vimrc.yaml"
-       , "~/_vimrc.yaml"
-       , "~/.vim/_vimrc.yaml"
-       , "~/_vim/_vimrc.yaml"
-       , "~/vimfiles/.vimrc.yaml"
-       , "~/vimfiles/vimrc.yaml"
-       , "~/vimfiles/_vimrc.yaml"
-       ]
+getSettingFile = fmap listToMaybe $ filterM doesFileExist =<<
+  mapM (either (\_ -> return "") pathConfigToFilePath . parsePathConfig)
+    [ "~/.vimrc.yaml"
+    , "~/.vim/.vimrc.yaml"
+    , "~/vimrc.yaml"
+    , "~/.vim/vimrc.yaml"
+    , "~/_vimrc.yaml"
+    , "~/.vim/_vimrc.yaml"
+    , "~/_vim/_vimrc.yaml"
+    , "~/vimfiles/.vimrc.yaml"
+    , "~/vimfiles/vimrc.yaml"
+    , "~/vimfiles/_vimrc.yaml"
+    , "~/$XDG_CONFIG_HOME/nvim/vimrc.yaml"
+    ]
 
 getSetting :: IO Setting
 getSetting = do

@@ -36,6 +36,7 @@ executable miv
                       , text
                       , unordered-containers
                       , monad-parallel
+                      , attoparsec
 
 test-suite spec
   hs-source-dirs:       test
